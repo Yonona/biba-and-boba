@@ -1,0 +1,8 @@
+services:
+  bezier-surface:
+    build: .
+    container_name: bezier-surface-lab3
+    ports:
+      - "6080:6080"
+      - "5900:5900"
+    restart: unless-stopped

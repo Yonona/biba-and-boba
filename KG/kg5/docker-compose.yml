@@ -1,0 +1,8 @@
+services:
+  visibility-lab5:
+    build: .
+    container_name: visibility-lab5
+    ports:
+      - "6080:6080"
+      - "5900:5900"
+    restart: "no"
