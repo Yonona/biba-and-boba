@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>В-сплайновая кривая · 7 точек · степени 1–6</title>
+<style>
+  :root{
+    --bg:#1b1c22;
+    --panel:#22242c;
+    --canvas-bg:#232530;
+    --grid:#2b2d38;
+    --poly:#4a4e5e;
+    --curve:#8fd0ff;
+    --curve-halo:#33506b;
+    --point-fill:#1b1c22;
+    --point-edge:#e8e8e8;
+    --point-ring:#555a6a;
+    --text:#ececec;
+    --muted:#aab0c0;
+    --accent:#8fd0ff;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:"Inter","Segoe UI",system-ui,-apple-system,"Noto Sans",sans-serif;
+    font-size:15px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    padding:24px 20px 32px;
+  }
+  .wrap{max-width:980px;margin:0 auto;}
+  h1{
+    font-size:20px;font-weight:600;margin:0 0 4px;
+    letter-spacing:-0.01em;
+  }
+  .sub{color:var(--muted);font-size:13px;margin:0 0 22px;}
+
+  .panel{
+    background:var(--panel);
+    border-radius:14px;
+    padding:18px 20px;
+    margin-bottom:18px;
+  }
+
+  .row{
+    display:flex;align-items:center;gap:16px;
+    margin-bottom:14px;
+  }
+  .row:last-child{margin-bottom:0;}
+  .row label{color:var(--muted);font-size:13px;min-width:70px;}
+
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    flex:1;height:6px;border-radius:3px;
+    background:#2b2d38;outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    width:18px;height:18px;border-radius:50%;
+    background:var(--accent);
+    cursor:pointer;
+    border:3px solid var(--panel);
+    box-shadow:0 0 0 1px var(--accent);
+    transition:transform .12s ease;
+  }
+  input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.12);}
+  input[type=range]::-moz-range-thumb{
+    width:18px;height:18px;border-radius:50%;
+    background:var(--accent);cursor:pointer;
+    border:3px solid var(--panel);
+    box-shadow:0 0 0 1px var(--accent);
+  }
+
+  .badge{
+    min-width:170px;text-align:center;
+    background:#2b2d38;color:var(--accent);
+    font-weight:600;font-size:14px;
+    padding:8px 14px;border-radius:10px;
+    font-variant-numeric:tabular-nums;
+  }
+
+  .check{
+    display:flex;align-items:center;gap:8px;
+    color:var(--muted);font-size:13px;cursor:pointer;
+    user-select:none;
+  }
+  .check input{accent-color:var(--accent);width:16px;height:16px;cursor:pointer;}
+
+  canvas{
+    display:block;width:100%;height:auto;
+    background:var(--canvas-bg);
+    border-radius:14px;
+  }
+
+  .info{
+    color:var(--muted);font-size:12.5px;
+    font-variant-numeric:tabular-nums;
+    word-break:break-all;
+  }
+  .info b{color:var(--text);font-weight:600;}
+  .note{color:var(--text);font-size:13px;margin-top:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>В-сплайновая кривая</h1>
+  <p class="sub">7 неповторяющихся точек · степень p = k − 1 · узловой вектор строится на Python</p>
+
+  <div class="panel">
+    <div class="row">
+      <label>Порядок k</label>
+      <input id="kSlider" type="range" min="2" max="7" step="1" value="4">
+      <div class="badge" id="kBadge">k = 4 · p = 3</div>
+    </div>
+    <div class="row">
+      <label style="min-width:70px"></label>
+      <label class="check"><input id="showPoly" type="checkbox" checked> задающий многоугольник</label>
+      <label class="check"><input id="showPts"  type="checkbox" checked> контрольные точки</label>
+    </div>
+  </div>
+
+  <canvas id="cv"></canvas>
+
+  <div class="panel">
+    <div class="info"><b>Узловой вектор:</b> <span id="knots">—</span></div>
+    <div class="note" id="note">—</div>
+  </div>
+
+</div>
+
+<script>
+
+const COL = {
+  bg:      "#232530",
+  grid:    "#2b2d38",
+  poly:    "#4a4e5e",
+  curve:   "#8fd0ff",
+  halo:    "#33506b",
+  pointFill:"#1b1c22",
+  pointEdge:"#e8e8e8",
+  pointRing:"#555a6a",
+  label:   "#aab0c0",
+};
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+const W = 900, H = 520;
+const dpr = window.devicePixelRatio || 1;
+
+function fitCanvas(){
+  cv.width  = W * dpr;
+  cv.height = H * dpr;
+  cv.style.width  = W + "px";
+  cv.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+let state = {
+  points: [],
+  curve: [],
+  knots: [],
+  k: 4,
+};
+
+function drawGrid(){
+  ctx.strokeStyle = COL.grid;
+  ctx.lineWidth = 1;
+  const step = 40;
+  for (let x = 0; x <= W; x += step){
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y <= H; y += step){
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+}
+
+function redraw(){
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  drawGrid();
+
+  // задающий многоугольник
+  if (document.getElementById("showPoly").checked && state.points.length > 1){
+    ctx.save();
+    ctx.strokeStyle = COL.poly;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(state.points[0][0], state.points[0][1]);
+    for (let i = 1; i < state.points.length; i++){
+      ctx.lineTo(state.points[i][0], state.points[i][1]);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (state.curve.length > 1){
+    ctx.lineJoin = "round";
+    ctx.lineCap  = "round";
+
+    ctx.strokeStyle = COL.halo;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(state.curve[0][0], state.curve[0][1]);
+    for (let i = 1; i < state.curve.length; i++){
+      ctx.lineTo(state.curve[i][0], state.curve[i][1]);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = COL.curve;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(state.curve[0][0], state.curve[0][1]);
+    for (let i = 1; i < state.curve.length; i++){
+      ctx.lineTo(state.curve[i][0], state.curve[i][1]);
+    }
+    ctx.stroke();
+  }
+
+  if (state.curve.length > 1){
+    const ends = [state.curve[0], state.curve[state.curve.length - 1]];
+    for (const [x, y] of ends){
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.strokeStyle = COL.halo;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.strokeStyle = COL.curve;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  if (document.getElementById("showPts").checked){
+    for (let i = 0; i < state.points.length; i++){
+      const [x, y] = state.points[i];
+
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = COL.bg;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.strokeStyle = COL.pointRing;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = COL.pointFill;
+      ctx.fill();
+      ctx.strokeStyle = COL.pointEdge;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = COL.label;
+      ctx.font = "12px Inter, 'Segoe UI', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("P" + i, x, y - 10);
+    }
+  }
+}
+
+function fmtKnots(arr){
+  return "[" + arr.map(v => Number.isInteger(v) ? v : v.toFixed(2)).join(", ") + "]";
+}
+
+const NOTES = {
+  2: "k = 2 (степень 1). Кривая вырождается в ломаную по задающим точкам.",
+  3: "k = 3 (степень 2). Квадратичный В-сплайн: касается внутренних рёбер многоугольника.",
+  4: "k = 4 (степень 3). Кубический В-сплайн: касается всех внутренних сторон задающего многоугольника.",
+  5: "k = 5 (степень 4). Выше гладкость, шире зона влияния одной точки.",
+  6: "k = 6 (степень 5). Ещё более гладкая кривая; локальность ослабевает.",
+  7: "k = 7 (степень 6). Формально вырождается в кривую Безье: все 7 точек влияют на всю кривую.",
+};
+
+async function fetchCurve(k){
+  const r = await fetch("/curve?k=" + k);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
+
+async function update(){
+  const k = parseInt(document.getElementById("kSlider").value, 10);
+  const p = k - 1;
+  document.getElementById("kBadge").textContent = `k = ${k} · p = ${p}`;
+  document.getElementById("note").textContent = NOTES[k] || "";
+
+  try {
+    const data = await fetchCurve(k);
+    state.k      = k;
+    state.points = data.points;
+    state.curve  = data.curve;
+    state.knots  = data.knots;
+    document.getElementById("knots").textContent = fmtKnots(state.knots);
+    redraw();
+  } catch (e){
+    console.error(e);
+    document.getElementById("note").textContent = "Ошибка загрузки: " + e.message;
+  }
+}
+
+document.getElementById("kSlider").addEventListener("input", update);
+document.getElementById("showPoly").addEventListener("change", redraw);
+document.getElementById("showPts").addEventListener("change", redraw);
+
+// старт
+update();
+</script>
+</body>
+</html>
