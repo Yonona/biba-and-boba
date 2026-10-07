@@ -127,26 +127,51 @@ def create_scene() -> List[Polyhedron]:
     ]
 
 
-def project(p: Point3D, width: int, height: int, scale: float, yaw: float = -0.55, pitch: float = 0.35):
-    # Additional fixed viewing orientation, followed by user-controlled object rotation.
+# Фиксированная ориентация наблюдения (наклон камеры). Одна и та же для
+# сортировки граней, определения видимости и проецирования.
+VIEW_YAW = -0.55
+VIEW_PITCH = 0.35
+
+
+def to_camera(p: Point3D, yaw: float = VIEW_YAW, pitch: float = VIEW_PITCH) -> Point3D:
+    """Перевод точки в систему координат наблюдателя (после поворота сцены).
+
+    В этой системе ось Z направлена от наблюдателя вглубь сцены, поэтому:
+      * большая z — точка ближе к наблюдателю;
+      * грань видима, если внешняя нормаль имеет положительную z-компоненту.
+    """
     cy, sy = math.cos(yaw), math.sin(yaw)
     x1 = p.x * cy + p.z * sy
     z1 = -p.x * sy + p.z * cy
     cx, sx = math.cos(pitch), math.sin(pitch)
     y2 = p.y * cx - z1 * sx
     z2 = p.y * sx + z1 * cx
-    return width / 2 + x1 * scale, height / 2 - y2 * scale, z2
+    return Point3D(x1, y2, z2)
+
+
+def project_camera(p: Point3D, width: int, height: int, scale: float):
+    """Ортогональная проекция точки, уже переведённой в систему наблюдателя."""
+    return width / 2 + p.x * scale, height / 2 - p.y * scale
+
+
+def project(p: Point3D, width: int, height: int, scale: float,
+            yaw: float = VIEW_YAW, pitch: float = VIEW_PITCH):
+    """Проекция точки мировых координат: наклон камеры, затем ортогональная проекция."""
+    q = to_camera(p, yaw, pitch)
+    x, y = project_camera(q, width, height, scale)
+    return x, y, q.z
 
 
 def build_face_records(scene: List[Polyhedron], rx: float, ry: float) -> List[FaceRecord]:
     records: List[FaceRecord] = []
     for poly in scene:
-        transformed = [p.rotate(rx, ry) for p in poly.vertices]
+        # Поворот сцены пользователем и перевод в систему наблюдателя.
+        transformed = [to_camera(p.rotate(rx, ry)) for p in poly.vertices]
         for face in poly.faces:
             pts = [transformed[i] for i in face.indices]
             nz = face_normal(pts).z
-            # For an observer looking along +Z, positive normal_z means the face
-            # points toward the observer after our coordinate convention.
+            # Наблюдатель расположен на +Z системы наблюдателя, поэтому грань
+            # видима, если её внешняя нормаль направлена к наблюдателю (nz > 0).
             records.append(
                 FaceRecord(
                     poly.name,
@@ -157,7 +182,7 @@ def build_face_records(scene: List[Polyhedron], rx: float, ry: float) -> List[Fa
                     min(p.z for p in pts),
                     max(p.z for p in pts),
                     nz,
-                    nz < 0,
+                    nz > 0,
                 )
             )
     # Painter algorithm: farthest average z first, nearest last.
@@ -170,8 +195,8 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Лабораторная работа №5 — Видимость многогранников")
-        self.root.geometry("1280x800")
-        self.root.minsize(1050, 700)
+        self.root.geometry("1280x940")
+        self.root.minsize(1050, 640)
         self.scene = create_scene()
         self.rx = math.radians(18)
         self.ry = math.radians(-28)
@@ -180,6 +205,7 @@ class App:
         self.show_labels = tk.BooleanVar(value=False)
         self.use_backface = tk.BooleanVar(value=False)
         self.scale = tk.DoubleVar(value=72)
+        self._pending_fit = True        # подобрать масштаб после первого показа холста
         self.status = tk.StringVar()
         self._build_ui()
         self._refresh()
@@ -193,12 +219,27 @@ class App:
         body = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         body.pack(fill="both", expand=True)
 
-        left = ttk.Frame(body, width=285)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        left.pack_propagate(False)
+        # Панель управления делаем прокручиваемой: при небольшой высоте окна
+        # группа «Отображение» иначе остаётся за пределами видимой области.
+        left_holder = ttk.Frame(body, width=300)
+        left_holder.pack(side="left", fill="y", padx=(0, 10))
+        left_holder.pack_propagate(False)
+        left_canvas = tk.Canvas(left_holder, highlightthickness=0, width=285)
+        left_scroll = ttk.Scrollbar(left_holder, orient="vertical", command=left_canvas.yview)
+        left = ttk.Frame(left_canvas)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>",
+                  lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>",
+                         lambda e: left_canvas.itemconfigure(left_window, width=e.width))
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left_scroll.pack(side="right", fill="y")
+        left_canvas.bind_all("<MouseWheel>",
+                             lambda e: left_canvas.yview_scroll(int(-e.delta / 30), "units"))
         center = ttk.Frame(body)
         center.pack(side="left", fill="both", expand=True)
-        right = ttk.Frame(body, width=340)
+        right = ttk.Frame(body, width=392)
         right.pack(side="right", fill="y", padx=(10, 0))
         right.pack_propagate(False)
 
@@ -211,6 +252,7 @@ class App:
         ttk.Button(box, text="Удалить выбранный", command=self.remove_selected).pack(fill="x", pady=(6, 0))
         ttk.Button(box, text="Сохранить сцену", command=self.save_scene).pack(fill="x", pady=(6, 0))
         ttk.Button(box, text="Загрузить сцену", command=self.load_scene).pack(fill="x", pady=(6, 0))
+        ttk.Button(box, text="Вписать сцену", command=self.fit_and_refresh).pack(fill="x", pady=(6, 0))
 
         ttk.Label(box, text="Многогранники:").pack(anchor="w", pady=(10, 3))
         self.poly_list = tk.Listbox(box, height=8, exportselection=False)
@@ -243,7 +285,7 @@ class App:
 
         self.canvas = tk.Canvas(center, background="#111827", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self._refresh())
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
 
         # Sorting table
         table_box = ttk.LabelFrame(right, text="Результат сортировки граней", padding=8)
@@ -251,7 +293,7 @@ class App:
         ttk.Label(table_box, text="Дальние грани рисуются первыми, ближние — последними.", wraplength=310).pack(anchor="w", pady=(0, 8))
         cols = ("n", "face", "zavg", "zmin", "zmax")
         self.tree = ttk.Treeview(table_box, columns=cols, show="headings", height=28)
-        headers = [("n", "№", 38), ("face", "Грань", 120), ("zavg", "Zср", 65), ("zmin", "Zmin", 65), ("zmax", "Zmax", 65)]
+        headers = [("n", "№", 38), ("face", "Грань", 118), ("zavg", "Zср", 65), ("zmin", "Zmin", 65), ("zmax", "Zmax", 70)]
         for col, title, width in headers:
             self.tree.heading(col, text=title)
             self.tree.column(col, width=width, anchor="center")
@@ -261,6 +303,44 @@ class App:
         self.tree.configure(yscrollcommand=scroll.set)
 
         ttk.Label(self.root, textvariable=self.status, relief="sunken", anchor="w", padding=(8, 4)).pack(fill="x", side="bottom")
+
+    def _on_canvas_resize(self, _event=None):
+        """Первое изменение размеров холста — подбираем масштаб под сцену."""
+        if self._pending_fit and self.canvas.winfo_width() > 50:
+            self._pending_fit = False
+            self.fit_scale()
+        self._refresh()
+
+    def fit_scale(self, margin=30.0):
+        """Подбор масштаба, при котором сцена целиком помещается на холсте.
+
+        Проекция совмещает начало мировых координат с центром холста, поэтому
+        предел масштаба определяется наибольшим выходом проекции за половину
+        ширины или высоты холста.
+        """
+        w = max(self.canvas.winfo_width(), 500)
+        h = max(self.canvas.winfo_height(), 400)
+        camera = [to_camera(v.rotate(self.rx, self.ry))
+                  for poly in self.scene for v in poly.vertices]
+        if not camera:
+            return
+        xs = [p.x for p in camera]
+        ys = [p.y for p in camera]
+        limits = []
+        if min(xs) < 0:
+            limits.append((w / 2 - margin) / -min(xs))
+        if max(xs) > 0:
+            limits.append((w / 2 - margin) / max(xs))
+        if max(ys) > 0:
+            limits.append((h / 2 - margin) / max(ys))
+        if min(ys) < 0:
+            limits.append((h / 2 - margin) / -min(ys))
+        if limits:
+            self.scale.set(max(30.0, min(120.0, min(limits))))
+
+    def fit_and_refresh(self):
+        self.fit_scale()
+        self._refresh()
 
     def _rotation_changed(self, _=None):
         self.rx = math.radians(float(self.rx_scale.get()))
@@ -274,6 +354,7 @@ class App:
 
     def reset_scene(self):
         self.scene = create_scene()
+        self.fit_scale()
         self._refresh()
 
     def add_cube(self):
@@ -281,11 +362,13 @@ class App:
         x = (idx % 3 - 1) * 2.5
         z = idx * 0.8
         self.scene.append(create_box(f"Куб {idx}", x, 0, z, 2.5, 2.2, 2.2, "#9b8bd4"))
+        self.fit_scale()
         self._refresh()
 
     def add_pyramid(self):
         idx = len(self.scene) + 1
         self.scene.append(create_pyramid(f"Пирамида {idx}", (idx % 3 - 1) * 2.0, 0, idx * 0.7, 2.7, 3.0, "#d7b36a"))
+        self.fit_scale()
         self._refresh()
 
     def remove_selected(self):
@@ -293,6 +376,7 @@ class App:
         if not sel:
             return
         del self.scene[sel[0]]
+        self.fit_scale()
         self._refresh()
 
     def _update_selected_info(self):
@@ -327,8 +411,8 @@ class App:
                 continue
             poly = next(p for p in self.scene if p.name == rec.poly_name)
             points = []
-            for p in rec.vertices:
-                q = project(p, w, h, self.scale.get())
+            for p in rec.vertices:                      # уже в системе наблюдателя
+                q = project_camera(p, w, h, self.scale.get())
                 points.extend([q[0], q[1]])
             is_selected = False
             color = poly.fill
@@ -338,14 +422,14 @@ class App:
             width = 1
             if self.show_hidden.get() or rec.visible:
                 self.canvas.create_polygon(points, fill=color, outline=outline, width=width)
-            if self.show_labels:
+            if self.show_labels.get():
                 cx = sum(points[0::2]) / len(rec.vertices)
                 cy = sum(points[1::2]) / len(rec.vertices)
                 self.canvas.create_text(cx, cy, text=f"{rec.poly_name}: {rec.face_name}", fill="#ffffff", font=("TkDefaultFont", 8))
 
         if self.show_control:
             for poly in self.scene:
-                transformed = [p.rotate(self.rx, self.ry) for p in poly.vertices]
+                transformed = [to_camera(p.rotate(self.rx, self.ry)) for p in poly.vertices]
                 edges = set()
                 for face in poly.faces:
                     for i in range(len(face.indices)):
@@ -354,8 +438,8 @@ class App:
                         edge = tuple(sorted((a, b)))
                         edges.add(edge)
                 for a, b in edges:
-                    pa = project(transformed[a], w, h, self.scale.get())
-                    pb = project(transformed[b], w, h, self.scale.get())
+                    pa = project_camera(transformed[a], w, h, self.scale.get())
+                    pb = project_camera(transformed[b], w, h, self.scale.get())
                     self.canvas.create_line(pa[0], pa[1], pb[0], pb[1], fill="#0f172a", width=2)
 
         self._update_tree(records)
@@ -406,6 +490,7 @@ class App:
             if not scene:
                 raise ValueError("Сцена пуста")
             self.scene = scene
+            self.fit_scale()
             self._refresh()
         except Exception as exc:
             messagebox.showerror("Ошибка загрузки", str(exc))
